@@ -1,0 +1,24 @@
+{
+	"name": "beechit/backup-restore",
+	"type": "typo3-cms-extension",
+	"description": "A low-level tool to backup and restore a full TYPO3 installation",
+	"license": ["GPL-2.0+"],
+	"require": {
+		"typo3/cms-core": ">=7.6.0,<=8.1",
+		"helhum/typo3-console": "3.x@dev"
+	},
+	"autoload": {
+		"psr-4": {
+			"BeechIt\\BackupRestore\\": "Classes/"
+		}
+	},
+	"replace": {
+		"backup_restore": "self.version",
+		"typo3-ter/backup-restore": "self.version"
+	},
+	"extra": {
+		"branch-alias": {
+			"dev-master": "1.0.x-dev"
+		}
+	}
+}
