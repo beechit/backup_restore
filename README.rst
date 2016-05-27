@@ -28,7 +28,7 @@ A low-level tool to backup and restore a full TYPO3 installation
 **Requirements:**
 
     TYPO3 >= 7.6
-    ext:typo3_console >= 2.0.0
+    ext:typo3_console >= 3.0.0
 
 **Important:**
 
