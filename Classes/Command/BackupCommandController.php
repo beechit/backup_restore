@@ -203,7 +203,7 @@ class BackupCommandController extends CommandController
 
         $commandParts = [
             'cd ' . $path . ' &&',
-            $this->getTarBinPath() . ' zcvf',
+            $this->getTarBinPath() . ' zhcvf',
             $target,
             '-C ' . $path,
         ];
