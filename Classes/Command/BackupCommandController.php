@@ -6,7 +6,10 @@ namespace BeechIt\BackupRestore\Command;
  * Date: 01-10-2015
  * All code (c) Beech Applications B.V. all rights reserved
  */
+use BeechIt\BackupRestore\Database\Process\MysqlCommand;
 use Helhum\Typo3Console\Mvc\Controller\CommandController;
+use Symfony\Component\Process\Process;
+use Symfony\Component\Process\ProcessBuilder;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Utility\PathUtility;
 
@@ -22,6 +25,12 @@ class BackupCommandController extends CommandController
      * @var string
      */
     protected $backupFolder = '';
+
+    /**
+     * @var \Helhum\Typo3Console\Database\Configuration\ConnectionConfiguration
+     * @inject
+     */
+    protected $connectionConfiguration;
 
     /**
      * Export files + database
@@ -115,6 +124,7 @@ class BackupCommandController extends CommandController
             // todo: get target path from sys_file_storages like packageFiles() instead of PATH_site
             shell_exec('cp -R ' . $folder . ' ' . PATH_site);
         }
+
 
         $this->restoreDB($tmpFolder . $backup . '-db.sql');
 
@@ -242,49 +252,75 @@ class BackupCommandController extends CommandController
      */
     protected function dumpDB($prefix)
     {
-        $dbData = $GLOBALS['TYPO3_CONF_VARS']['DB'];
+        $dbConfig = $this->connectionConfiguration->build();
+        $mysqlCommand = new MysqlCommand(
+            $dbConfig,
+            new ProcessBuilder()
+        );
         $path = $this->getPath($prefix) . '-db.sql';
-
-        $commandParts = [
-            $this->getMysqlDumpBinPath() . ' --host=' . $dbData['host'],
-            '--user=' . $dbData['username'],
-            '--password="' . str_replace('"', '\"', $dbData['password']) . '"',
-            $dbData['database']
-        ];
-
+        $commandParts = [];
         foreach ($this->getNotNeededTables() as $tableName) {
-            $commandParts[] = '--ignore-table=' . $dbData['database'] . '.' . $tableName;
+            $commandParts[] = '--ignore-table=' . $dbConfig['dbname'] . '.' . $tableName;
         }
-        $commandParts[] = ' > ' . $path;
-        $command = implode(' ', $commandParts);
 
-        shell_exec($command);
-        shell_exec('chmod 664 ' . $path);
+        $exitCode = $mysqlCommand->mysqldump(
+            $commandParts,
+            function ($type, $data) use ($path) {
+                $output = $this->output->getSymfonyConsoleOutput();
+                if (Process::OUT === $type) {
+                    file_put_contents($path, $data, FILE_APPEND);
+                } elseif (Process::ERR === $type) {
+                    $output->getErrorOutput()->write($data);
+                }
+            }
+        );
 
         $this->outputLine('The dump has been saved to "%s" and got a size of "%s".', [$path, GeneralUtility::formatSize(filesize($path))]);
+
+        return $exitCode;
     }
 
     /**
-     * Export the complete DB using mysqldump
+     * Restore the complete DB using mysql
      *
      * @param string $sqlFile
      * @return void
      */
     protected function restoreDB($sqlFile)
     {
-        $dbData = $GLOBALS['TYPO3_CONF_VARS']['DB'];
+        $dbConfig = $this->connectionConfiguration->build();
+        $mysqlCommand = new MysqlCommand(
+            $dbConfig,
+            new ProcessBuilder()
+        );
 
-        $commandParts = [
-            $this->getMysqlBinPath() . ' --host=' . $dbData['host'],
-            '--user=' . $dbData['username'],
-            '--password="' . str_replace('"', '\"', $dbData['password']) . '"',
-            $dbData['database'] . ' < ' . $sqlFile
-        ];
+        $exitCode = $mysqlCommand->mysql(
+            [],
+            // @todo: improve to real resource input
+            file_get_contents($sqlFile),
+            $this->buildOutputClosure()
+        );
 
-        $command = implode(' ', $commandParts);
-        shell_exec($command);
+        if (!$exitCode) {
+            $this->outputLine('The db has been restored');
+        }
 
-        $this->outputLine('The db has been restored');
+        return $exitCode;
+    }
+
+    /**
+     * @return \Closure
+     */
+    protected function buildOutputClosure()
+    {
+        return function ($type, $data) {
+            $output = $this->output->getSymfonyConsoleOutput();
+            if (Process::OUT === $type) {
+                $output->write($data);
+            } elseif (Process::ERR === $type) {
+                $output->getErrorOutput()->write($data);
+            }
+        };
     }
 
     /**
