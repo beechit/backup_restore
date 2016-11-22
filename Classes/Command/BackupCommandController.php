@@ -7,9 +7,12 @@ namespace BeechIt\BackupRestore\Command;
  * All code (c) Beech Applications B.V. all rights reserved
  */
 use BeechIt\BackupRestore\Database\Process\MysqlCommand;
+use BeechIt\BackupRestore\File\Process\TarCommand;
 use Helhum\Typo3Console\Mvc\Controller\CommandController;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\ProcessBuilder;
+use TYPO3\CMS\Core\Database\DatabaseConnection;
+use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Core\Utility\PathUtility;
 
@@ -33,6 +36,11 @@ class BackupCommandController extends CommandController
     protected $connectionConfiguration;
 
     /**
+     * @var array temp files (removed after destruction of object)
+     */
+    protected $tmpFiles = [];
+
+    /**
      * Export files + database
      *
      * @param string $prefix
@@ -49,14 +57,31 @@ class BackupCommandController extends CommandController
             $this->outputLine('Please set correct ENV path_mysqldump_bin to mysqldump binary');
             $this->quit(1);
         }
-        $this->createOutputDirectory($backupFolder);
+        $this->setBackupFolder($backupFolder);
         if (empty($prefix)) {
             $prefix = $this->createPrefix();
         }
-        $this->dumpDB($prefix);
-        $this->packageFiles($prefix);
 
-        $this->combineBackupFiles($prefix);
+        $target = $this->getPath($prefix) . '.tgz';
+        $tmpFolder = $this->getTempFolder();
+        $dbDump = $this->dumpDB($tmpFolder);
+        $storageFiles = $this->packageFiles($tmpFolder);
+
+        $tarCommand = new TarCommand(new ProcessBuilder());
+        $tarCommand->tar(
+            array_merge([
+                'zcf',
+                $target,
+                '--directory',
+                $tmpFolder,
+                $dbDump,
+            ],
+                $storageFiles
+            )
+        );
+        GeneralUtility::fixPermissions($target);
+
+        $this->outputLine('Created "%s" (%s)', [$target, GeneralUtility::formatSize(filesize($target), 'si') . 'B']);
     }
 
     /**
@@ -66,11 +91,11 @@ class BackupCommandController extends CommandController
      */
     public function listCommand($backupFolder = '')
     {
-        $this->createOutputDirectory($backupFolder);
+        $this->setBackupFolder($backupFolder);
 
         $this->outputLine('available backups:');
-        foreach (glob($this->backupFolder . '*-backup.tgz') as $file) {
-            $this->outputLine(preg_replace('/-backup\.tgz/', '', basename($file)));
+        foreach (glob($this->backupFolder . '*.tgz') as $file) {
+            $this->outputLine(preg_replace('/\.tgz/', '', basename($file)));
         }
 
         $this->outputLine('');
@@ -92,7 +117,82 @@ class BackupCommandController extends CommandController
             $this->outputLine('Please set correct ENV path_mysql_bin to mysql binary');
             $this->quit(1);
         }
-        $this->createOutputDirectory($backupFolder);
+        $this->setBackupFolder($backupFolder);
+
+        if (preg_match('/-backup$/', $backup)) {
+            $this->legacyRestore($backup);
+            return;
+        }
+
+        $tmpFolder = $this->getTempFolder() . preg_replace('/\.tgz$/', '', $backup) . '/';
+        GeneralUtility::mkdir($tmpFolder);
+
+        $backupFile = $this->backupFolder . $backup . '.tgz';
+
+        $tarCommand = new TarCommand(new ProcessBuilder());
+
+        $tarCommand->tar(
+            [
+                'zxf',
+                $backupFile,
+                '-C',
+                $tmpFolder
+            ],
+            $this->buildOutputClosure()
+        );
+
+        if (is_file($tmpFolder . 'db.sql')) {
+            $this->restoreDB($tmpFolder . 'db.sql');
+        }
+
+        foreach ($this->getStorageInfo() as $storageInfo) {
+            $storageFile = $tmpFolder . $storageInfo['backupFile'];
+            if (!file_exists($storageFile)) {
+                continue;
+            }
+
+            // restore files
+            if (is_dir($storageInfo['folder'])) {
+
+                // empty target folder
+                shell_exec('rm -r ' . trim($storageInfo['folder']) . '/*');
+
+                $tarCommand->tar(
+                    [
+                        'zxf',
+                        $storageFile,
+                        '-C',
+                        $storageInfo['folder']
+                    ],
+                    $this->buildOutputClosure()
+                );
+
+                $this->outputLine('Restore storage "%s"', [$storageInfo['name']]);
+            } else {
+                $output = $this->output->getSymfonyConsoleOutput();
+                $output->getErrorOutput()->write(
+                    vsprintf(
+                        '[!!!] Failed to restore storage "%s", root folder "%s" does not exist!!',
+                        [
+                            $storageInfo['name'],
+                            $storageInfo['folder']
+                        ]
+                    )
+                    . PHP_EOL
+                );
+            }
+        }
+
+        // Cleanup tmp folder
+        shell_exec('rm -r ' . $tmpFolder);
+    }
+
+    /**
+     * Restore legacy format backups
+     *
+     * @param string $backup
+     */
+    protected function legacyRestore($backup) {
 
         // strip off default suffix -backup.tgz from backup name
         $backup = preg_replace('/-backup\.tgz$/', '', $backup);
@@ -133,34 +233,6 @@ class BackupCommandController extends CommandController
     }
 
     /**
-     * Combine DB + Files backup to 1 file
-     *
-     * @param string $prefix
-     */
-    protected function combineBackupFiles($prefix)
-    {
-
-        $target = $this->getPath($prefix) . '-backup.tgz';
-
-        $commandParts = [
-            'cd ' . $this->backupFolder . '&&',
-            $this->getTarBinPath() . ' zcvf',
-            $target,
-            '-C ' . $this->backupFolder,
-            $prefix . '-files.tgz',
-            $prefix . '-db.sql',
-        ];
-        $command = implode(' ', $commandParts);
-        shell_exec($command);
-        GeneralUtility::fixPermissions($target);
-
-        $this->outputLine('The backup has been saved to "%s" and got a size of "%s".', [$target, GeneralUtility::formatSize(filesize($target))]);
-
-        unlink($this->getPath($prefix) . '-files.tgz');
-        unlink($this->getPath($prefix) . '-db.sql');
-    }
-
-    /**
      * Export database
      *
      * @param string $prefix
@@ -177,87 +249,129 @@ class BackupCommandController extends CommandController
             $this->outputLine('Please set correct ENV path_mysqldump_bin to mysqldump binary');
             $this->quit(1);
         }
-        $this->createOutputDirectory($backupFolder);
+        $this->setBackupFolder($backupFolder);
 
-        $this->dumpDB($prefix, $backupFolder);
-    }
+        $tmpFolder = $this->getTempFolder();
+        $dbDumpFile = $this->dumpDB($tmpFolder);
 
-    /**
-     * Export files
-     *
-     * @param string $prefix
-     * @param string $backupFolder Alternative path of backup folder
-     * @return void
-     */
-    public function filesCommand($prefix = '', $backupFolder = '')
-    {
-        if (!$this->checkIfBinaryExists($this->getTarBinPath())) {
-            $this->outputLine('Please set correct ENV path_tar_bin to tar binary');
-            $this->quit(1);
-        }
-        $this->createOutputDirectory($backupFolder);
+        $target = $this->getPath($prefix) . '.sql';
+        rename($tmpFolder . $dbDumpFile, $target);
 
-        $this->packageFiles($prefix);
+        $this->outputLine('DB dump saved as "%s"', [$target]);
     }
 
     /**
      * Package files which are used but not part of the git repo
      *
-     * @param string $prefix
-     * @return void
+     * @param string $tmpFolder
+     * @return array
      */
-    protected function packageFiles($prefix)
+    protected function packageFiles($tmpFolder)
     {
-        $path = PATH_site;
-        $target = $this->getPath($prefix) . '-files.tgz';
+        $tarCommand = new TarCommand(new ProcessBuilder());
+        $storageFiles = [];
 
-        $commandParts = [
-            'cd ' . $path . ' &&',
-            $this->getTarBinPath() . ' zhcvf',
-            $target,
-            '-C ' . $path,
+        foreach ($this->getStorageInfo() as $storageInfo) {
+
+            $file = $storageInfo['backupFile'];
+            $storageFiles[] = $file;
+            $commandArguments =
+                [
+                    '-zcf',
+                    $tmpFolder . $file,
+                    '--directory',
+                    $storageInfo['folder'],
+                    '.',
+                ];
+            foreach ((array)$storageInfo['exclude'] as $exclude) {
+                $commandArguments[] = '--exclude';
+                $commandArguments[] = $exclude;
+            }
+
+            $tarCommand->tar(
+                $commandArguments,
+                $this->buildOutputClosure()
+            );
+
+            $this->outputLine('Packed storage "%s" (%s)', [$storageInfo['name'], GeneralUtility::formatSize(filesize($tmpFolder . $file), 'si') . 'B']);
+
+            $this->tmpFiles[] = $tmpFolder . $file;
+        }
+
+        return $storageFiles;
+    }
+
+    /**
+     * @return array
+     * @throws \InvalidArgumentException
+     */
+    protected function getStorageInfo()
+    {
+        $storageInfo = [];
+
+        // Default "legacy" upload folder
+        $storageInfo[] = [
+            'id' => 'uploads',
+            'name' => 'uploads',
+            'folder' => realpath(PATH_site . 'uploads'),
+            'exclude' => [],
+            'backupFile' => 'uploads.tgz',
         ];
 
-        /** @var \TYPO3\CMS\Core\Resource\StorageRepository $storageRepository */
-        $storageRepository = GeneralUtility::makeInstance('TYPO3\\CMS\\Core\\Resource\\StorageRepository');
-        $storages = $storageRepository->findAll();
-        /** @var \TYPO3\CMS\Core\Resource\ResourceStorage */
-        foreach ($storages as $storage) {
-            if ($storage->getDriverType() === 'Local' && $storage->isOnline()) {
-                $configuration = $storage->getConfiguration();
-                $basePath = '';
-                if (!empty($configuration['basePath'])) {
-                    $basePath = trim($configuration['basePath'], '/') . '/';
-                }
-                if ($basePath) {
-                    $commandParts[] = $basePath;
-                    $storageRecord = $storage->getStorageRecord();
-                    $commandParts[] = '--exclude="' . $basePath . ($storageRecord['processingfolder'] ?: \TYPO3\CMS\Core\Resource\ResourceStorageInterface::DEFAULT_ProcessingFolder) . '"';
-                }
+        $table = 'sys_file_storage';
+        $storages = $this->getDatabaseConnection()->exec_SELECTgetRows(
+            '*',
+            $table,
+            '1=1'
+            . \TYPO3\CMS\Backend\Utility\BackendUtility::BEenableFields($table)
+            . \TYPO3\CMS\Backend\Utility\BackendUtility::deleteClause($table),
+            '',
+            'name',
+            '',
+            'uid'
+        );
+
+        foreach ((array)$storages as $storageRecord) {
+            if ($storageRecord['driver'] !== 'Local' || empty($storageRecord['is_online'])) {
+                continue;
+            }
+            $configuration = ResourceFactory::getInstance()->convertFlexFormDataToConfigurationArray($storageRecord['configuration']);
+            $basePath = '';
+            if (!empty($configuration['basePath'])) {
+                $basePath = rtrim($configuration['basePath'], '/');
+            }
+            if (strpos($basePath, '/') !== 0) {
+                $basePath = PATH_site . $basePath;
+            }
+            if ($basePath) {
+                $storageInfo[] = [
+                    'id' => $storageRecord['uid'],
+                    'name' => $storageRecord['name'],
+                    'folder' => $basePath,
+                    'exclude' => [$storageRecord['processingfolder'] ?: \TYPO3\CMS\Core\Resource\ResourceStorageInterface::DEFAULT_ProcessingFolder],
+                    'backupFile' => 'storage-' . $storageRecord['uid'] . '.tgz',
+                ];
             }
         }
 
-        $command = implode(' ', $commandParts);
-        shell_exec($command);
-        shell_exec('chmod 664 ' . $target);
-
-        $this->outputLine('The files have been saved to "%s" and got a size of "%s".', [$target, GeneralUtility::formatSize(filesize($target))]);
+        return $storageInfo;
     }
 
     /**
      * Export the complete DB using mysqldump
      *
-     * @param string $prefix
-     * @return void
+     * @param string $tmpFolder
+     * @return string
      */
-    protected function dumpDB($prefix)
+    protected function dumpDB($tmpFolder)
     {
         $dbConfig = $this->connectionConfiguration->build();
         $mysqlCommand = new MysqlCommand(
             $dbConfig,
             new ProcessBuilder()
         );
-        $path = $this->getPath($prefix) . '-db.sql';
+        $dbDumpFile = 'db.sql';
+        $path = $tmpFolder . $dbDumpFile;
         $commandParts = [];
         foreach ($this->getNotNeededTables() as $tableName) {
             $commandParts[] = '--ignore-table=' . $dbConfig['dbname'] . '.' . $tableName;
@@ -265,19 +379,16 @@ class BackupCommandController extends CommandController
 
         $exitCode = $mysqlCommand->mysqldump(
             $commandParts,
-            function ($type, $data) use ($path) {
-                $output = $this->output->getSymfonyConsoleOutput();
-                if (Process::OUT === $type) {
-                    file_put_contents($path, $data, FILE_APPEND);
-                } elseif (Process::ERR === $type) {
-                    $output->getErrorOutput()->write($data);
-                }
-            }
+            $this->buildOutputToFileClosure($path)
         );
 
-        $this->outputLine('The dump has been saved to "%s" and got a size of "%s".', [$path, GeneralUtility::formatSize(filesize($path))]);
+        // @todo: do something with $exitCode
 
-        return $exitCode;
+        $this->outputLine('Database dump created (%s)', [GeneralUtility::formatSize(filesize($path), 'si') . 'B']);
+
+        $this->tmpFiles[] = $path;
+
+        return $dbDumpFile;
     }
 
     /**
@@ -306,6 +417,24 @@ class BackupCommandController extends CommandController
         }
 
         return $exitCode;
+    }
+
+    /**
+     * @return \Closure
+     */
+    protected function buildOutputToFileClosure($file)
+    {
+        // empty file
+        file_put_contents($file, '');
+
+        return function ($type, $data) use ($file) {
+            $output = $this->output->getSymfonyConsoleOutput();
+            if (Process::OUT === $type) {
+                file_put_contents($file, $data, FILE_APPEND);
+            } elseif (Process::ERR === $type) {
+                $output->getErrorOutput()->write($data);
+            }
+        };
     }
 
     /**
@@ -349,17 +478,30 @@ class BackupCommandController extends CommandController
     }
 
     /**
-     * Create directory
+     * Set backup folder
+     * When no specific folder is given the default folder is used
      *
      * @param string $backupFolder
      * @return void
      */
-    protected function createOutputDirectory($backupFolder)
+    protected function setBackupFolder($backupFolder = '')
     {
         $this->backupFolder = rtrim(PathUtility::getCanonicalPath($backupFolder ?: $this->getDefaultBackupFolder()), '/') . '/';
         if (!is_dir($this->backupFolder)) {
             GeneralUtility::mkdir_deep($this->backupFolder);
         }
+    }
+
+    /**
+     * @return string
+     */
+    protected function getTempFolder()
+    {
+        $tmpFolder = $this->backupFolder . 'temp/';
+        if (!is_dir($tmpFolder)) {
+            GeneralUtility::mkdir_deep($tmpFolder);
+        }
+        return $tmpFolder;
     }
 
     /**
@@ -459,5 +601,25 @@ class BackupCommandController extends CommandController
     {
         $returnVal = shell_exec('which ' . $binary);
         return (empty($returnVal) ? false : true);
+    }
+
+    /**
+     * @return DatabaseConnection
+     */
+    protected function getDatabaseConnection()
+    {
+        return $GLOBALS['TYPO3_DB'];
+    }
+
+    /**
+     * Destructor
+     */
+    public function __destruct()
+    {
+        foreach ($this->tmpFiles as $file) {
+            if (is_file($file)) {
+                unlink($file);
+            }
+        }
     }
 }
