@@ -129,8 +129,12 @@ class BackupCommandController extends CommandController
 
         $backupFile = $this->backupFolder . $backup . '.tgz';
 
-        $tarCommand = new TarCommand(new ProcessBuilder());
+        if (!file_exists($backupFile)) {
+            $this->outputLine('Backup ' . $backup . ' (' . $backupFile . ') not found!!');
+            $this->quit(1);
+        }
 
+        $tarCommand = new TarCommand(new ProcessBuilder());
         $tarCommand->tar(
             [
                 'zxf',
