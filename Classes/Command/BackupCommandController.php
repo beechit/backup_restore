@@ -8,6 +8,7 @@ namespace BeechIt\BackupRestore\Command;
  */
 use BeechIt\BackupRestore\Database\Process\MysqlCommand;
 use BeechIt\BackupRestore\File\Process\TarCommand;
+use Helhum\Typo3Console\Database\Schema\SchemaUpdateType;
 use Helhum\Typo3Console\Mvc\Controller\CommandController;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Process\ProcessBuilder;
@@ -34,6 +35,12 @@ class BackupCommandController extends CommandController
      * @inject
      */
     protected $connectionConfiguration;
+
+    /**
+     * @var \Helhum\Typo3Console\Service\Database\SchemaService
+     * @inject
+     */
+    protected $schemaService;
 
     /**
      * @var array temp files (removed after destruction of object)
@@ -418,6 +425,17 @@ class BackupCommandController extends CommandController
 
         if (!$exitCode) {
             $this->outputLine('The db has been restored');
+
+            // Update DB to be sure all needed tables are present
+            try {
+                $schemaUpdateTypes = SchemaUpdateType::expandSchemaUpdateTypes(['*.add', '*.change']);
+                $result = $this->schemaService->updateSchema($schemaUpdateTypes);
+                if ($result->hasPerformedUpdates()) {
+                    $this->output->outputLine('<info>Updated db to be inline with extension configuration</info>');
+                }
+            } catch (\UnexpectedValueException $e) {
+                $this->outputLine('<error>Failed to update db: %s</error>', [$e->getMessage()]);
+            }
         }
 
         return $exitCode;
