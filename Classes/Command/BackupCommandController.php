@@ -120,9 +120,10 @@ class BackupCommandController extends CommandController
      *
      * @param string $backup Name of backup (with or without file extension)
      * @param string $backupFolder Alternative path of backup folder
+     * @param bool $plainRestore Restore db without sanitizing and merging with local tables
      * @param bool $force Force restore in Production context
      */
-    public function restoreCommand($backup = '', $backupFolder = '', $force = false)
+    public function restoreCommand($backup = '', $backupFolder = '', $plainRestore = false, $force = false)
     {
         if (!$force && (string)GeneralUtility::getApplicationContext() === 'Production') {
             $this->outputLine('<error>Restore is not possible in <em>Production</em> context without the <i>--force</i> option</error>');
@@ -179,12 +180,12 @@ class BackupCommandController extends CommandController
         );
 
         if (is_file($tmpFolder . 'db.sql')) {
-            $this->restoreDB($tmpFolder . 'db.sql');
+            $this->restoreDB($tmpFolder . 'db.sql', $plainRestore);
         } else {
             // legacy db dump
             $legacyDbDump = $tmpFolder . preg_replace('/-backup$/', '', $backup) . '-db.sql';
             if (is_file($legacyDbDump)){
-                $this->restoreDB($legacyDbDump);
+                $this->restoreDB($legacyDbDump, $plainRestore);
             }
         }
 
@@ -270,6 +271,98 @@ class BackupCommandController extends CommandController
 
         // Cleanup tmp folder
         shell_exec('rm -r ' . $tmpFolder);
+    }
+
+    /**
+     * Copy db tables we merge with restored database later
+     *
+     * @todo: make it possible to extend this through configuration
+     */
+    protected function createCopyOfTablesToMerge()
+    {
+        $db = $this->getDatabaseConnection();
+        foreach (['sys_domain', 'be_users'] as $table) {
+            $db->sql_query('CREATE TABLE ' . $table . '_local LIKE ' . $table);
+            $db->sql_query('INSERT INTO ' . $table . '_local SELECT * FROM ' . $table);
+            $this->output->outputLine('Created <i>%s</i>', [$table . '_local']);
+        }
+    }
+
+    /**
+     * Sanitize restored tables
+     *
+     * @todo: make it possible to extend this through configuration
+     */
+    protected function sanitizeRestoredTables()
+    {
+        $db = $this->getDatabaseConnection();
+
+        $availableTables = $db->admin_get_tables();
+        if (isset($availableTables['fe_users'])) {
+            $db->sql_query('UPDATE fe_users SET username = MD5(username), password = MD5(password), email = CONCAT(LEFT(UUID(), 8), "@beech.it") WHERE email NOT LIKE "%@beech.it"');
+
+            $this->output->outputLine('<info>Sanitized `fe_users` table</info>');
+        }
+    }
+
+    /**
+     * Merge restored tables with local tables
+     *
+     * @todo: make it possible to extend this through configuration
+     */
+    protected function mergeRestoredTablesWithLocalCopies()
+    {
+        $db = $this->getDatabaseConnection();
+
+        // Keep domain info of local environment
+        $db->sql_query('
+            UPDATE
+                sys_domain AS a
+            JOIN
+                sys_domain_local AS b
+            ON
+                a.uid = b.uid
+            SET
+                a.domainName = b.domainName,
+                a.redirectTo = b.redirectTo
+        ');
+
+        if ($db->sql_error()) {
+            $this->output->outputLine('<error>[SQL ERROR] %s</error>', [$db->sql_error()]);
+        } else {
+            $this->output->outputLine('<info>Merged sys_domain with local version</info>');
+        }
+
+        // Disable all BE users
+        $db->sql_query('UPDATE be_users SET disable = 1');
+
+        // Keep BE users info of local environment
+        $db->sql_query('
+            UPDATE
+                be_users AS a
+            JOIN
+                be_users_local AS b
+            ON
+                a.uid = b.uid
+            SET
+                a.username = b.username,
+                a.password = b.password,
+                a.admin = b.admin,
+                a.disable = b.disable,
+                a.deleted = b.deleted
+        ');
+
+        if ($db->sql_error()) {
+            $this->output->outputLine('<error>[SQL ERROR] %s</error>', [$db->sql_error()]);
+        } else {
+            $this->output->outputLine('<info>Merged be_users with local version (new added users are disabled)</info>');
+        }
+
+        foreach (['sys_domain', 'be_users'] as $table) {
+            $db->sql_query('DROP TABLE  ' . $table . '_local');
+
+            $this->output->outputLine('Deleted <i>%s</i>', [$table . '_local']);
+        }
     }
 
     /**
@@ -460,8 +553,12 @@ class BackupCommandController extends CommandController
      * @param string $sqlFile
      * @return void
      */
-    protected function restoreDB($sqlFile)
+    protected function restoreDB($sqlFile, $plainRestore)
     {
+        if (!$plainRestore) {
+            $this->createCopyOfTablesToMerge();
+        }
+
         $dbConfig = $this->connectionConfiguration->build();
         $mysqlCommand = new MysqlCommand(
             $dbConfig,
@@ -477,6 +574,11 @@ class BackupCommandController extends CommandController
 
         if (!$exitCode) {
             $this->outputLine('The db has been restored');
+
+            if (!$plainRestore) {
+                $this->sanitizeRestoredTables();
+                $this->mergeRestoredTablesWithLocalCopies();
+            }
 
             // Update DB to be sure all needed tables are present
             try {
