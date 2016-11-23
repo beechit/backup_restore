@@ -23,6 +23,9 @@ use TYPO3\CMS\Core\Utility\PathUtility;
 class BackupCommandController extends CommandController
 {
 
+    /**
+     * Default backup folder relative to web root of site
+     */
     const PATH = '../backups/';
 
     /**
@@ -48,9 +51,13 @@ class BackupCommandController extends CommandController
     protected $tmpFiles = [];
 
     /**
-     * Export files + database
+     * Create backup of file storages + database
      *
-     * @param string $prefix
+     * Dump database excluding cache and some log tables and pack
+     * contents of all local file storages (including legacy folder uploads)
+     * into 1 backup file.
+     *
+     * @param string $prefix Specific prefix (name) to use for backup file
      * @param string $backupFolder Alternative path of backup folder
      * @return void
      */
@@ -109,10 +116,10 @@ class BackupCommandController extends CommandController
     }
 
     /**
-     * Restore backup
+     * Restore file storages + database from backup
      *
-     * @param string $backup
-     * @param string $backupFolder
+     * @param string $backup Name of backup (with or without file extension)
+     * @param string $backupFolder Alternative path of backup folder
      * @param bool $force Force restore in Production context
      */
     public function restoreCommand($backup, $backupFolder = '', $force = false)
@@ -249,18 +256,16 @@ class BackupCommandController extends CommandController
     }
 
     /**
-     * Export database
+     * Create database dump
      *
-     * @param string $prefix
+     * Dump database excluding cache and some log tables
+     *
+     * @param string $prefix Specific prefix (name) to use for backup file
      * @param string $backupFolder Alternative path of backup folder
      * @return void
      */
     public function dbCommand($prefix = '', $backupFolder = '')
     {
-        if (!$this->checkIfBinaryExists($this->getTarBinPath())) {
-            $this->outputLine('Please set correct ENV path_tar_bin to tar binary');
-            $this->quit(1);
-        }
         if (!$this->checkIfBinaryExists($this->getMysqlDumpBinPath())) {
             $this->outputLine('Please set correct ENV path_mysqldump_bin to mysqldump binary');
             $this->quit(1);
