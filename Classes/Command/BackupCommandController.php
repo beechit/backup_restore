@@ -108,8 +108,8 @@ class BackupCommandController extends CommandController
         $this->setBackupFolder($backupFolder);
 
         $this->outputLine('available backups:');
-        foreach (glob($this->backupFolder . '*.tgz') as $file) {
-            $this->outputLine(preg_replace('/\.tgz/', '', basename($file)));
+        foreach ($this->getAvailableBackups() as $backup) {
+            $this->outputLine($backup);
         }
 
         $this->outputLine('');
@@ -122,7 +122,7 @@ class BackupCommandController extends CommandController
      * @param string $backupFolder Alternative path of backup folder
      * @param bool $force Force restore in Production context
      */
-    public function restoreCommand($backup, $backupFolder = '', $force = false)
+    public function restoreCommand($backup = '', $backupFolder = '', $force = false)
     {
         if (!$force && (string)GeneralUtility::getApplicationContext() === 'Production') {
             $this->outputLine('<error>Restore is not possible in <em>Production</em> context without the <i>--force</i> option</error>');
@@ -137,6 +137,22 @@ class BackupCommandController extends CommandController
             $this->quit(1);
         }
         $this->setBackupFolder($backupFolder);
+
+        while(empty($backup)) {
+            $backups = $this->getAvailableBackups();
+            if ($backups === []) {
+                $this->output->outputLine('<error>No backups found in "%s" to restore!</error>', [$this->backupFolder]);
+                $this->quit(1);
+            }
+            $default = end(array_keys($backups));
+            $backup = $this->output->select(
+                'Select backup [' . $default .']:',
+                $backups,
+                $default,
+                false,
+                99
+            );
+        }
 
         if (preg_match('/-backup$/', $backup)) {
             $this->legacyRestore($backup);
@@ -320,6 +336,28 @@ class BackupCommandController extends CommandController
         }
 
         return $storageFiles;
+    }
+
+    /**
+     * Get available backups
+     *
+     * @return array
+     */
+    protected function getAvailableBackups()
+    {
+        $backups = [];
+        foreach (glob($this->backupFolder . '*.tgz') as $file) {
+            $backup = preg_replace('/\.tgz/', '', basename($file));
+            $backups[$backup] = vsprintf(
+                '%s (%sB - %s)',
+                [
+                    $backup,
+                    GeneralUtility::formatSize(filesize($file), 'si'),
+                    date('Y-m-d H:i:s', filemtime($file))
+                ]
+            );
+        }
+        return $backups;
     }
 
     /**
