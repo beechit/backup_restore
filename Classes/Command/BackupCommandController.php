@@ -398,7 +398,10 @@ class BackupCommandController extends CommandController
             $this->buildOutputToFileClosure($path)
         );
 
-        // @todo: do something with $exitCode
+        if ($exitCode) {
+            $this->output->outputLine('<error>Database backup failed</error>');
+            $this->quit(1);
+        }
 
         $this->outputLine('Database dump created (%s)', [GeneralUtility::formatSize(filesize($path), 'si') . 'B']);
 
