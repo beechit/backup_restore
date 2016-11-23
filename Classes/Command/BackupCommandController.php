@@ -113,9 +113,14 @@ class BackupCommandController extends CommandController
      *
      * @param string $backup
      * @param string $backupFolder
+     * @param bool $force Force restore in Production context
      */
-    public function restoreCommand($backup, $backupFolder = '')
+    public function restoreCommand($backup, $backupFolder = '', $force = false)
     {
+        if (!$force && (string)GeneralUtility::getApplicationContext() === 'Production') {
+            $this->outputLine('<error>Restore is not possible in <em>Production</em> context without the <i>--force</i> option</error>');
+            $this->quit(1);
+        }
         if (!$this->checkIfBinaryExists($this->getTarBinPath())) {
             $this->outputLine('Please set correct ENV path_tar_bin to tar binary');
             $this->quit(1);
