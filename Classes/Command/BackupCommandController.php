@@ -136,6 +136,7 @@ class BackupCommandController extends CommandController
             $this->outputLine('Please set correct ENV path_mysql_bin to mysql binary');
             $this->quit(1);
         }
+
         $this->setBackupFolder($backupFolder);
 
         while(empty($backup)) {
@@ -154,12 +155,9 @@ class BackupCommandController extends CommandController
             );
         }
 
-        if (preg_match('/-backup$/', $backup)) {
-            $this->legacyRestore($backup);
-            return;
-        }
-
-        $tmpFolder = $this->getTempFolder() . preg_replace('/\.tgz$/', '', $backup) . '/';
+        // We expect the backup name without leading extension so be sure it is stripped
+        $backup = preg_replace('/\.tgz$/', '', $backup);
+        $tmpFolder = $this->getTempFolder() . $backup . '/';
         GeneralUtility::mkdir($tmpFolder);
 
         $backupFile = $this->backupFolder . $backup . '.tgz';
@@ -182,43 +180,55 @@ class BackupCommandController extends CommandController
 
         if (is_file($tmpFolder . 'db.sql')) {
             $this->restoreDB($tmpFolder . 'db.sql');
+        } else {
+            // legacy db dump
+            $legacyDbDump = $tmpFolder . preg_replace('/-backup$/', '', $backup) . '-db.sql';
+            if (is_file($legacyDbDump)){
+                $this->restoreDB($legacyDbDump);
+            }
         }
 
-        foreach ($this->getStorageInfo() as $storageInfo) {
-            $storageFile = $tmpFolder . $storageInfo['backupFile'];
-            if (!file_exists($storageFile)) {
-                continue;
-            }
+        $legacyFileBackup = $tmpFolder . preg_replace('/-backup$/', '', $backup) . '-files.tgz';
+        if (is_file($legacyFileBackup)) {
+            $this->legacyRestore($tmpFolder, $legacyFileBackup);
+        } else {
 
-            // restore files
-            if (is_dir($storageInfo['folder'])) {
+            foreach ($this->getStorageInfo() as $storageInfo) {
+                $storageFile = $tmpFolder . $storageInfo['backupFile'];
+                if (!file_exists($storageFile)) {
+                    continue;
+                }
 
-                // empty target folder
-                shell_exec('rm -r ' . trim($storageInfo['folder']) . '/*');
+                // restore files
+                if (is_dir($storageInfo['folder'])) {
 
-                $tarCommand->tar(
-                    [
-                        'zxf',
-                        $storageFile,
-                        '-C',
-                        $storageInfo['folder']
-                    ],
-                    $this->buildOutputClosure()
-                );
+                    // empty target folder
+                    shell_exec('rm -r ' . trim($storageInfo['folder']) . '/*');
 
-                $this->outputLine('Restore storage "%s"', [$storageInfo['name']]);
-            } else {
-                $output = $this->output->getSymfonyConsoleOutput();
-                $output->getErrorOutput()->write(
-                    vsprintf(
-                        '[!!!] Failed to restore storage "%s", root folder "%s" does not exist!!',
+                    $tarCommand->tar(
                         [
-                            $storageInfo['name'],
+                            'zxf',
+                            $storageFile,
+                            '-C',
                             $storageInfo['folder']
-                        ]
-                    )
-                    . PHP_EOL
-                );
+                        ],
+                        $this->buildOutputClosure()
+                    );
+
+                    $this->outputLine('Restore storage "%s"', [$storageInfo['name']]);
+                } else {
+                    $output = $this->output->getSymfonyConsoleOutput();
+                    $output->getErrorOutput()->write(
+                        vsprintf(
+                            '[!!!] Failed to restore storage "%s", root folder "%s" does not exist!!',
+                            [
+                                $storageInfo['name'],
+                                $storageInfo['folder']
+                            ]
+                        )
+                        . PHP_EOL
+                    );
+                }
             }
         }
 
@@ -229,43 +239,34 @@ class BackupCommandController extends CommandController
     /**
      * Restore legacy format backups
      *
-     * @param string $backup
+     * @param string $tmpFolder folder to temporary extract the files
+     * @param string $fileBackups path of files tgz file
      */
-    protected function legacyRestore($backup) {
+    protected function legacyRestore($tmpFolder, $fileBackups) {
 
-        // strip off default suffix -backup.tgz from backup name
-        $backup = preg_replace('/-backup\.tgz$/', '', $backup);
-
-        // Create full path to backup file
-        $backupFile = $this->backupFolder . $backup;
-        $tmpFolder = rtrim($this->backupFolder . $backup, '/') . '/';
-
-        if (!file_exists($backupFile)) {
-            $backupFile .= '-backup.tgz';
-        }
-
-        if (!file_exists($backupFile)) {
-            $this->outputLine('Backup ' . $backup . '(' . $backupFile . ') not found!!');
-            $this->quit(1);
-        }
+        $tmpFolder .= 'file-storages/';
 
         // Create tmp folder
         GeneralUtility::mkdir($tmpFolder);
-        GeneralUtility::mkdir($tmpFolder . 'file-storages/');
 
-        shell_exec($this->getTarBinPath() . ' zxf ' . $backupFile . ' -C ' . $tmpFolder);
-        shell_exec($this->getTarBinPath() . ' zxf ' . $tmpFolder . $backup . '-files.tgz -C ' . $tmpFolder . 'file-storages/');
+        $tarCommand = new TarCommand(new ProcessBuilder());
+        $tarCommand->tar(
+            [
+                'zxf',
+                $fileBackups,
+                '-C',
+                $tmpFolder
+            ],
+            $this->buildOutputClosure()
+        );
 
-        foreach (glob($tmpFolder . 'file-storages/*', GLOB_ONLYDIR) as $folder) {
+        foreach (glob($tmpFolder . '*', GLOB_ONLYDIR) as $folder) {
             $this->outputLine('restore file storage: ' . basename($folder));
 
             // todo: cleanup removed files from storage
             // todo: get target path from sys_file_storages like packageFiles() instead of PATH_site
             shell_exec('cp -R ' . $folder . ' ' . PATH_site);
         }
-
-
-        $this->restoreDB($tmpFolder . $backup . '-db.sql');
 
         // Cleanup tmp folder
         shell_exec('rm -r ' . $tmpFolder);
