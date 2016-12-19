@@ -24,6 +24,13 @@ class BackupCommandController extends CommandController
 {
 
     /**
+     * @var int processTimeOut in seconds, default on 2 minutes.
+     * This variable can be override by setting the environment variable:BACKUP_PROCESS_TIME_OUT
+     * For example: BACKUP_PROCESS_TIME_OUT="300" php typo3cms backup:create
+     */
+    protected $processTimeOut = 120;
+
+    /**
      * Default backup folder relative to web root of site
      */
     const PATH = '../backups/';
@@ -49,6 +56,14 @@ class BackupCommandController extends CommandController
      * @var array temp files (removed after destruction of object)
      */
     protected $tmpFiles = [];
+
+    public function __construct()
+    {
+        $processTimeOutEnv = getenv('BACKUP_PROCESS_TIME_OUT');
+        if (!empty($processTimeOutEnv)) {
+            $this->processTimeOut = $processTimeOutEnv;
+        }
+    }
 
     /**
      * Create backup of file storages + database
@@ -81,7 +96,9 @@ class BackupCommandController extends CommandController
         $dbDump = $this->dumpDB($tmpFolder);
         $storageFiles = $this->packageFiles($tmpFolder);
 
-        $tarCommand = new TarCommand(new ProcessBuilder());
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
+        $tarCommand = new TarCommand($processBuilder);
         $tarCommand->tar(
             array_merge([
                 'zcf',
@@ -167,8 +184,9 @@ class BackupCommandController extends CommandController
             $this->outputLine('Backup ' . $backup . ' (' . $backupFile . ') not found!!');
             $this->quit(1);
         }
-
-        $tarCommand = new TarCommand(new ProcessBuilder());
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
+        $tarCommand = new TarCommand($processBuilder);
         $tarCommand->tar(
             [
                 'zxf',
@@ -250,7 +268,9 @@ class BackupCommandController extends CommandController
         // Create tmp folder
         GeneralUtility::mkdir($tmpFolder);
 
-        $tarCommand = new TarCommand(new ProcessBuilder());
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
+        $tarCommand = new TarCommand($processBuilder);
         $tarCommand->tar(
             [
                 'zxf',
@@ -399,7 +419,9 @@ class BackupCommandController extends CommandController
      */
     protected function packageFiles($tmpFolder)
     {
-        $tarCommand = new TarCommand(new ProcessBuilder());
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
+        $tarCommand = new TarCommand($processBuilder);
         $storageFiles = [];
 
         foreach ($this->getStorageInfo() as $storageInfo) {
