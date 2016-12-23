@@ -234,6 +234,8 @@ class BackupCommandController extends CommandController
                         $this->buildOutputClosure()
                     );
 
+                    GeneralUtility::fixPermissions($storageInfo['folder'], true);
+
                     $this->outputLine('Restore storage "%s"', [$storageInfo['name']]);
                 } else {
                     $output = $this->output->getSymfonyConsoleOutput();
