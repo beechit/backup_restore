@@ -4,7 +4,7 @@
 	"description": "A low-level tool to backup and restore a full TYPO3 installation",
 	"license": ["GPL-2.0+"],
 	"require": {
-		"typo3/cms-core": ">=7.6.9,<=8.1",
+		"typo3/cms-core": ">=7.6.9||>=8.0",
 		"helhum/typo3-console": ">=3.5"
 	},
 	"autoload": {
