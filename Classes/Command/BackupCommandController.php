@@ -303,7 +303,7 @@ class BackupCommandController extends CommandController
     protected function createCopyOfTablesToMerge()
     {
         $db = $this->getDatabaseConnection();
-        foreach (['sys_domain', 'be_users'] as $table) {
+        foreach (['sys_domain', 'be_users', 'tx_scheduler_task'] as $table) {
             $db->sql_query('CREATE TABLE ' . $table . '_local LIKE ' . $table);
             $db->sql_query('INSERT INTO ' . $table . '_local SELECT * FROM ' . $table);
             $this->output->outputLine('Created <i>%s</i>', [$table . '_local']);
@@ -380,7 +380,37 @@ class BackupCommandController extends CommandController
             $this->output->outputLine('<info>Merged be_users with local version (new added users are disabled)</info>');
         }
 
-        foreach (['sys_domain', 'be_users'] as $table) {
+        // Disable all scheduler tasks
+        $db->sql_query('UPDATE tx_scheduler_task SET disable = 1');
+
+        $update = [];
+        foreach ($db->admin_get_fields('tx_scheduler_task') as $fieldName => $info) {
+            if ($fieldName === 'uid') {
+                continue;
+            }
+            $update[] = 'a.' . $fieldName . ' = b.' . $fieldName;
+        }
+
+        // Keep scheduler tasks info of local environment
+        $db->sql_query('
+            UPDATE
+                tx_scheduler_task AS a
+            JOIN
+                tx_scheduler_task_local AS b
+            ON
+                a.uid = b.uid
+            SET
+                ' . implode(',', $update) . '
+        ');
+
+        if ($db->sql_error()) {
+            $this->output->outputLine('<error>[SQL ERROR] %s</error>', [$db->sql_error()]);
+        } else {
+            $this->output->outputLine('<info>Merged tx_scheduler_task with local version (new added tasks are disabled)</info>');
+        }
+
+
+        foreach (['sys_domain', 'be_users', 'tx_scheduler_task'] as $table) {
             $db->sql_query('DROP TABLE  ' . $table . '_local');
 
             $this->output->outputLine('Deleted <i>%s</i>', [$table . '_local']);
