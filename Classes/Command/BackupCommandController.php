@@ -573,9 +573,12 @@ class BackupCommandController extends CommandController
     protected function dumpDB($tmpFolder)
     {
         $dbConfig = $this->connectionConfiguration->build();
+
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
         $mysqlCommand = new MysqlCommand(
             $dbConfig,
-            new ProcessBuilder()
+            $processBuilder
         );
         $dbDumpFile = 'db.sql';
         $path = $tmpFolder . $dbDumpFile;
@@ -614,9 +617,11 @@ class BackupCommandController extends CommandController
         }
 
         $dbConfig = $this->connectionConfiguration->build();
+        $processBuilder = new ProcessBuilder();
+        $processBuilder->setTimeout($this->processTimeOut);
         $mysqlCommand = new MysqlCommand(
             $dbConfig,
-            new ProcessBuilder()
+            $processBuilder
         );
 
         $exitCode = $mysqlCommand->mysql(
