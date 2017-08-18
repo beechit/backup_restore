@@ -9,7 +9,6 @@ return [
     'bootingSteps' => [
         'backup_restore:backup:restore' => [
             'helhum.typo3console:database',
-            'helhum.typo3console:persistence'
         ],
     ]
 ];
