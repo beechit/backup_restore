@@ -325,6 +325,14 @@ class BackupCommandController extends CommandController
 
             $this->output->outputLine('<info>Sanitized `fe_users` table</info>');
         }
+        if (isset($availableTables['tx_powermail_domain_model_mail'])) {
+            $db->sql_query('TRUNCATE tx_powermail_domain_model_mail');
+            $this->output->outputLine('<info>Truncated `tx_powermail_domain_model_mail` table</info>');
+        }
+        if (isset($availableTables['tx_powermail_domain_model_answer'])) {
+            $db->sql_query('TRUNCATE tx_powermail_domain_model_answer');
+            $this->output->outputLine('<info>Truncated `tx_powermail_domain_model_answer` table</info>');
+        }
     }
 
     /**
