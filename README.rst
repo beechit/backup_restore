@@ -13,22 +13,22 @@ A low-level tool to backup and restore a full TYPO3 installation
 2. Now you have a set of cli commands to backup and restore a TYPO3 install ::
 
     # create a backup
-    ./typo3cms backup:create
+    ./typo3cms backuprestore:create
 
     # list existing backups
-    ./typo3cms backup:list
+    ./typo3cms backuprestore:list
 
     # restore a backup
-    ./typo3cms backup:restore 2016-05-19_10-16-dd20a00976208b56
+    ./typo3cms backuprestore:restore 2016-05-19_10-16-dd20a00976208b56
 
     # create backup with specific name
-    ./typo3cms backup:create kickstart
+    ./typo3cms backuprestore:create kickstart
 
 
 **Requirements:**
 
-    TYPO3 >= 7.6
-    ext:typo3_console >= 3.0.0
+    TYPO3 >= 10.3
+    ext:typo3_console >= 6.0.0
 
 **Important:**
 
