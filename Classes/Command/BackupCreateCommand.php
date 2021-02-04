@@ -201,7 +201,7 @@ class BackupCreateCommand extends \Symfony\Component\Console\Command\Command
         );
         $dbDumpFile = 'db.sql';
         $path = $tmpFolder . $dbDumpFile;
-        $commandParts = [];
+        $commandParts = ['--no-tablespaces'];
         foreach ($this->getUnNeededTables() as $tableName) {
             $commandParts[] = '--ignore-table=' . $dbConfig['dbname'] . '.' . $tableName;
         }
