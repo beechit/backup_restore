@@ -43,7 +43,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
      * This variable can be override by setting the environment variable:BACKUP_PROCESS_TIME_OUT
      * For example: BACKUP_PROCESS_TIME_OUT="30000" php typo3cms backup:create
      */
-    protected $processTimeOut = 30000;
+    protected $processTimeOut = 600;
 
     /**
      * @var BackupFileService
