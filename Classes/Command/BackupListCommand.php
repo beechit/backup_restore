@@ -39,5 +39,7 @@ class BackupListCommand extends \Symfony\Component\Console\Command\Command
             $io->success($backup);
         }
         $io->newLine(1);
+
+        return 0;
     }
 }

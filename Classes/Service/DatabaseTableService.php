@@ -9,12 +9,13 @@
 namespace BeechIt\BackupRestore\Service;
 
 
-use Helhum\Typo3Console\Service\Persistence\TableDoesNotExistException;
+use Doctrine\DBAL\Exception\TableNotFoundException;
 use TYPO3\CMS\Core\Database\Connection;
 use TYPO3\CMS\Core\Database\ConnectionPool;
+use TYPO3\CMS\Core\SingletonInterface;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 
-class DatabaseTableService
+class DatabaseTableService implements SingletonInterface
 {
     /**
      * Get all tables which might be truncated
@@ -53,7 +54,7 @@ class DatabaseTableService
     /**
      * @param $tableName
      * @return array
-     * @throws TableDoesNotExistException
+     * @throws TableNotFoundException
      */
     public function getFieldsOfTable($tableName): array
     {
@@ -70,7 +71,7 @@ class DatabaseTableService
             }
             return $fields;
         }
-        throw new TableDoesNotExistException('Table does not exist');
+        throw new TableNotFoundException('Table does not exist');
     }
 
     /**
@@ -87,5 +88,21 @@ class DatabaseTableService
             $tableNames[] = $table->getName();
         }
         return $tableNames;
+    }
+
+    /**
+     * Check if given table exists
+     *
+     * @param string $table
+     * @return bool
+     */
+    public function checkIfTableExists($table): bool
+    {
+        $tableColumns = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getConnectionForTable($table)
+            ->getSchemaManager()
+            ->listTableColumns($table);
+
+        return !(empty($tableColumns) === true);
     }
 }

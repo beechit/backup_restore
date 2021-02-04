@@ -15,6 +15,7 @@ use BeechIt\BackupRestore\Service\DatabaseTableService;
 use BeechIt\BackupRestore\Service\StorageService;
 use BeechIt\BackupRestore\Utility\BinaryUtility;
 use Doctrine\DBAL\DBALException;
+use Doctrine\DBAL\Exception\TableNotFoundException;
 use Helhum\Typo3Console\Database\Configuration\ConnectionConfiguration;
 use Helhum\Typo3Console\Database\Schema\SchemaUpdate;
 use Helhum\Typo3Console\Database\Schema\SchemaUpdateType;
@@ -31,14 +32,12 @@ use TYPO3\CMS\Core\Database\Connection;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Database\Query\QueryBuilder;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
-use TYPO3\CMS\Extbase\SignalSlot\Dispatcher;
 
 /**
  * Class BackupCommandController
  */
 class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
 {
-
     /**
      * @var int processTimeOut in seconds, default on 10 minutes.
      * This variable can be override by setting the environment variable:BACKUP_PROCESS_TIME_OUT
@@ -52,16 +51,19 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
     protected $backupFileService;
 
     /**
-     * @var \Helhum\Typo3Console\Database\Configuration\ConnectionConfiguration
-     * @TYPO3\CMS\Extbase\Annotation\Inject
+     * @var ConnectionConfiguration
      */
     protected $connectionConfiguration;
 
     /**
-     * @var \Helhum\Typo3Console\Service\Database\SchemaService
-     * @TYPO3\CMS\Extbase\Annotation\Inject
+     * @var SchemaService
      */
     protected $schemaService;
+
+    /**
+     * @var DatabaseTableService
+     */
+    protected $databaseTableService;
 
     /**
      * @var array temp files (removed after destruction of object)
@@ -74,9 +76,17 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
     protected $io;
 
     /**
+     * Tables to merge on restore
+     * @var string[]
+     */
+    protected $tablesToMerge = ['be_users', 'tx_scheduler_task'];
+
+    /**
      * BackupCreateCommand constructor.
+     *
      * @param string|null $name
-     * @param ConnectionConfiguration $connectionConfiguration
+     * @param ConnectionConfiguration|null $connectionConfiguration
+     * @param DatabaseTableService $databaseTableService
      */
     public function __construct(
         string $name = null,
@@ -85,7 +95,16 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
         parent::__construct($name);
         $this->connectionConfiguration = $connectionConfiguration ?: new ConnectionConfiguration();
         $this->schemaService = $schemaService ?? new SchemaService(new SchemaUpdate());
+        $this->databaseTableService = $databaseTableService ?? GeneralUtility::makeInstance(DatabaseTableService::class);
 
+        if ($this->databaseTableService->checkIfTableExists('sys_domain')) {
+            $this->tablesToMerge[] = 'sys_domain';
+        }
+
+        $processTimeOutEnv = getenv('BACKUP_PROCESS_TIME_OUT');
+        if (!empty($processTimeOutEnv)) {
+            $this->processTimeOut = (int)$processTimeOutEnv;
+        }
     }
 
     /**
@@ -121,11 +140,6 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        // TODO check if the backup_process_time_out is still relevant
-        $processTimeOutEnv = getenv('BACKUP_PROCESS_TIME_OUT');
-        if (!empty($processTimeOutEnv)) {
-            $this->processTimeOut = $processTimeOutEnv;
-        }
         $backup = $input->getArgument('backup');
         $backupFolder = $input->getOption('backup-folder');
         $plainRestore = $input->getOption('plain-restore');
@@ -144,7 +158,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
         $helper = $this->getHelper('question');
 
         if (!$force && (string)Environment::getContext() === 'Production') {
-            $this->io->error(sprintf('Restore is not possible in <em>Production</em> context without the --force option'));
+            $this->io->error(sprintf('Restore is not possible in "Production" context without the --force option'));
             return 1;
         }
         if (!BinaryUtility::checkIfBinaryExists(TarCommand::getTarBinPath())) {
@@ -178,9 +192,17 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
         $tarCommand = new TarCommand();
         $tmpFolder = $this->backupFileService->getTmpFolder() . $backup . '/';
         GeneralUtility::mkdir($tmpFolder);
+
+        $this->io->note('Extracting backup tgz');
         $this->extractBackupFileToTmpFolder($tarCommand, $backupFile, $tmpFolder);
+
+        $this->io->note('Restore DB dump');
         $this->restoreDatabaseFromFolder($tmpFolder, $backup, $plainRestore);
+
+        $this->io->note('Restore file storages');
         $this->restoreStorages($tmpFolder, $backup, $tarCommand);
+
+        $this->io->note('Remove temp folders');
         $this->backupFileService->removeFolder($tmpFolder);
         return 0; // everything ok
     }
@@ -229,15 +251,15 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
     {
         /** @var Connection $dbConnection */
         $dbConnection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionByName(ConnectionPool::DEFAULT_CONNECTION_NAME);
-        foreach (['sys_domain', 'be_users', 'tx_scheduler_task'] as $table) {
+        foreach ($this->tablesToMerge as $table) {
             try {
                 $dbConnection->exec('CREATE TABLE ' . $table . '_local LIKE ' . $table);
                 $dbConnection->exec('INSERT INTO ' . $table . '_local SELECT * FROM ' . $table);
             } catch (DBALException $ex) {
-                $this->io->error(sprintf('<error>Failed creating</error> <i>%s_local</i>', $table));
-                return;
+                $this->io->error(sprintf('Failed creating [%s_local]', $table));
+                continue;
             }
-            $this->io->success(sprintf('Created <i>%s_local</i>', $table));
+            $this->io->success(sprintf('Created [%s_local]', $table));
         }
     }
 
@@ -245,12 +267,12 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
     {
         /** @var Connection $dbConnection */
         $dbConnection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionByName(ConnectionPool::DEFAULT_CONNECTION_NAME);
-        foreach (['sys_domain', 'be_users', 'tx_scheduler_task'] as $table) {
+        foreach ($this->tablesToMerge as $table) {
             try {
                 $dbConnection->exec('DROP TABLE  ' . $table . '_local');
-                $this->io->success(sprintf('<info>Deleted</info> <i>%s_local</i>', $table));
+                $this->io->success(sprintf('Deleted [%s_local]', $table));
             } catch (DBALException $ex) {
-                $this->io->error(sprintf('<error>Failed dropping table </error> <i>%s_local</i>', $table));
+                $this->io->error(sprintf('Failed dropping table [%s_local]', $table));
             }
         }
     }
@@ -279,11 +301,13 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
      */
     protected function mergeRestoredTablesWithLocalCopies()
     {
-        try {
-            $this->updateSysDomainWithLocalInformation();
-            $this->io->success('Merged sys_domain with local version');
-        } catch (DBALException $exception) {
-            $this->io->error(sprintf('[SQL ERROR] %s', $exception->getMessage()));
+        if (in_array('sys_domain', $this->tablesToMerge)) {
+            try {
+                $this->updateSysDomainWithLocalInformation();
+                $this->io->success('Merged sys_domain with local version');
+            } catch (DBALException $exception) {
+                $this->io->error(sprintf('[SQL ERROR] %s', $exception->getMessage()));
+            }
         }
 
         try {
@@ -291,7 +315,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
             $this->updateBackendUserWithLocalInformation();
             $this->io->success('Merged be_users with local version (new added users are disabled)');
         } catch (DBALException $exception) {
-            $this->io->error('sprintf([SQL ERROR] %s', $exception->getMessage());
+            $this->io->error(sprintf('[SQL ERROR] %s', $exception->getMessage()));
         }
 
         try {
@@ -299,7 +323,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
             $this->updateSchedularTaskWithLocalInformation();
             $this->io->success('Merged tx_scheduler_task with local version (new added tasks are disabled)');
         } catch (DBALException $exception) {
-            $this->io->error('sprintf([SQL ERROR] %s', $exception->getMessage());
+            $this->io->error(sprintf('[SQL ERROR] %s', $exception->getMessage()));
         }
     }
 
@@ -357,7 +381,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
             $updateFields[] = 'a.' . $fieldName . ' = b.' . $fieldName;
         }
 
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionForTable('sys_domain');
+        $connection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionForTable('tx_scheduler_task');
         $connection->exec('
             UPDATE
                 tx_scheduler_task AS a
@@ -386,13 +410,11 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
     /**
      * @param $tableName
      * @return array
-     * @throws TableDoesNotExistException
+     * @throws TableNotFoundException
      */
     protected function getFieldsOfTable($tableName): array
     {
-        /** @var DatabaseTableService $databaseTableService */
-        $databaseTableService = GeneralUtility::makeInstance(DatabaseTableService::class);
-        return $databaseTableService->getFieldsOfTable($tableName);
+        return $this->databaseTableService->getFieldsOfTable($tableName);
     }
 
     /**
@@ -436,7 +458,8 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
             [],
             // @todo: improve to real resource input
             file_get_contents($sqlFile),
-            $this->buildOutputClosure()
+            $this->buildOutputClosure(),
+            $this->processTimeOut
         );
 
         if (!$exitCode) {
@@ -456,7 +479,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
                     $this->io->success('Updated db to be inline with extension configuration');
                 }
             } catch (\UnexpectedValueException $e) {
-                $this->io->error('<error>Failed to update db: %s</error>', [$e->getMessage()]);
+                $this->io->error(sprintf('Failed to update db: %s', $e->getMessage()));
             }
         }
 
@@ -532,7 +555,6 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
         if (is_file($legacyFileBackup)) {
             $this->legacyRestore($tmpFolder, $legacyFileBackup);
         } else {
-
             foreach ($this->getOnlineLocalStorages() as $storageInfo) {
                 $storageFile = $tmpFolder . $storageInfo['backupFile'];
                 if (!file_exists($storageFile)) {
@@ -541,7 +563,7 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
                 if (!is_dir($storageInfo['folder'])) {
                     $this->io->error(
                         vsprintf(
-                            '[!!!] Failed to restore storage "%s", root folder "%s" does not exist!!',
+                            'Failed to restore storage "%s", root folder "%s" does not exist!!',
                             [
                                 $storageInfo['name'],
                                 $storageInfo['folder']
@@ -560,11 +582,12 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
                         '-C',
                         $storageInfo['folder']
                     ],
-                    $this->buildOutputClosure()
+                    $this->buildOutputClosure(),
+                    $this->processTimeOut
                 );
 
                 GeneralUtility::fixPermissions($storageInfo['folder'], true);
-                $this->io->success(sprintf('Restore storage "%s"', $storageInfo['name']));
+                $this->io->success(sprintf('Restored storage "%s"', $storageInfo['name']));
             }
         }
     }
@@ -593,7 +616,8 @@ class BackupRestoreCommand extends \Symfony\Component\Console\Command\Command
                 '-C',
                 $tmpFolder
             ],
-            $this->buildOutputClosure()
+            $this->buildOutputClosure(),
+            $this->processTimeOut
         );
     }
 }
