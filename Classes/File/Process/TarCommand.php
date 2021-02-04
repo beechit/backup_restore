@@ -19,13 +19,14 @@ class TarCommand
     /**
      * @param array $additionalArguments
      * @param null $outputCallback
+     * @param int $processTimeout
      * @return int
      */
-    public function tar(array $additionalArguments = [], $outputCallback = null): int
+    public function tar(array $additionalArguments = [], $outputCallback = null, int $processTimeout = 600): int
     {
         $processCommand = array_merge([self::getTarBinPath()], $additionalArguments);
         $process = new Process($processCommand);
-        $process->setTimeout(600);
+        $process->setTimeout($processTimeout);
         return $process->run($this->buildDefaultOutputCallback($outputCallback));
     }
 
@@ -59,5 +60,4 @@ class TarCommand
 
         return 'tar';
     }
-
 }

@@ -1,4 +1,5 @@
 <?php
+
 namespace BeechIt\BackupRestore\Database\Process;
 
 /*
@@ -6,6 +7,7 @@ namespace BeechIt\BackupRestore\Database\Process;
  * Date: 01-10-2015
  * All code (c) Beech Applications B.V. all rights reserved
  */
+
 use Symfony\Component\Process\Process;
 
 /**
@@ -33,13 +35,14 @@ class MysqlCommand
      * @param array $additionalArguments
      * @param bool|resource $inputStream
      * @param null $outputCallback
+     * @param int $processTimeout
      * @return int
      */
-    public function mysql(array $additionalArguments = [], $inputStream = STDIN, $outputCallback = null): int
+    public function mysql(array $additionalArguments = [], $inputStream = STDIN, $outputCallback = null, int $processTimeout = 600): int
     {
         $processCommand = array_merge([self::getMysqlBinPath()], array_merge($this->buildConnectionArguments(), $additionalArguments));
         $process = new Process($processCommand);
-        $process->setTimeout(600);
+        $process->setTimeout($processTimeout);
         $process->setInput($inputStream);
         return $process->run($this->buildDefaultOutputCallback($outputCallback));
     }
@@ -47,13 +50,14 @@ class MysqlCommand
     /**
      * @param array $additionalArguments
      * @param null $outputCallback
+     * @param int $processTimeout
      * @return int
      */
-    public function mysqldump(array $additionalArguments = array(), $outputCallback = null): int
+    public function mysqldump(array $additionalArguments = array(), $outputCallback = null, int $processTimeout = 600): int
     {
         $processCommand = array_merge([self::getMysqlDumpBinPath()], array_merge($this->buildConnectionArguments(), $additionalArguments));
         $process = new Process($processCommand);
-        $process->setTimeout(600);
+        $process->setTimeout($processTimeout);
         return $process->run($this->buildDefaultOutputCallback($outputCallback));
     }
 

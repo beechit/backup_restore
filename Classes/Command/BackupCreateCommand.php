@@ -64,9 +64,15 @@ class BackupCreateCommand extends \Symfony\Component\Console\Command\Command
     public function __construct(
         string $name = null,
         ConnectionConfiguration $connectionConfiguration = null
-    ) {
+    )
+    {
         parent::__construct($name);
         $this->connectionConfiguration = $connectionConfiguration ?: new ConnectionConfiguration();
+
+        $processTimeOutEnv = getenv('BACKUP_PROCESS_TIME_OUT');
+        if (!empty($processTimeOutEnv)) {
+            $this->processTimeOut = (int)$processTimeOutEnv;
+        }
     }
 
     /**
@@ -82,12 +88,6 @@ class BackupCreateCommand extends \Symfony\Component\Console\Command\Command
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        // TODO check if the backup_process_time_out is still relevant
-        $processTimeOutEnv = getenv('BACKUP_PROCESS_TIME_OUT');
-        if (!empty($processTimeOutEnv)) {
-            $this->processTimeOut = $processTimeOutEnv;
-        }
-
         $prefix = $input->getArgument('prefix');
         $backupFolder = $input->getArgument('backupFolder');
         $this->io = new SymfonyStyle($input, $output);
@@ -121,7 +121,9 @@ class BackupCreateCommand extends \Symfony\Component\Console\Command\Command
                 $dbDump,
             ],
                 $storageFiles
-            )
+            ),
+            null,
+            $this->processTimeOut
         );
         GeneralUtility::fixPermissions($target);
         $this->io->success(sprintf('Created "%s" (%s B)', $target, GeneralUtility::formatSize(filesize($target), 'si')));
@@ -206,7 +208,8 @@ class BackupCreateCommand extends \Symfony\Component\Console\Command\Command
 
         $exitCode = $mysqlCommand->mysqldump(
             $commandParts,
-            $this->buildOutputToFileClosure($path)
+            $this->buildOutputToFileClosure($path),
+            $this->processTimeOut
         );
 
         if ($exitCode) {
